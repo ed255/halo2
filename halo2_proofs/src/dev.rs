@@ -660,6 +660,182 @@ impl<F: Field + Group> Assignment<F> for MockProver<F> {
     }
 }
 
+fn print_f<F: FieldExt>(f: &F) {
+    let minus_one = F::zero() - F::one();
+    if f <= &F::from(0xffffffffffffffffu64) {
+        print!("{}", f.get_lower_128());
+        return;
+    } else if *f * minus_one <= F::from(0xffffffffffffffffu64) {
+        print!("(-{})", (*f * minus_one).get_lower_128());
+        return;
+    } else if f != &F::zero() {
+        let inv = f.invert().unwrap();
+        if inv <= F::from(0xffffffffffffffffu64) {
+            print!("{}^{{-1}}", inv.get_lower_128());
+            return;
+        }
+        if inv * minus_one <= F::from(0xffffffffffffffffu64) {
+            print!("(-{})^{{-1}}", (inv * minus_one).get_lower_128());
+            return;
+        }
+    }
+    print!("{:?}", f)
+}
+
+fn paren_maby<F: FieldExt>(cs: &ConstraintSystem<F>, exp: &Expression<F>) {
+    match exp {
+        Expression::Sum(..) | Expression::Negated(..) => {
+            print!("(");
+            print_exp_sub(cs, exp);
+            print!(")");
+        }
+        _ => print_exp_sub(cs, exp),
+    }
+}
+
+fn is_one<F: FieldExt>(exp: &Expression<F>) -> bool {
+    match exp {
+        Expression::Constant(f) => f == &F::one(),
+        _ => false,
+    }
+}
+
+fn print_exp<F: FieldExt>(cs: &ConstraintSystem<F>, exp: &Expression<F>) {
+    println!("\\begin{{aligned}}");
+    print!("&");
+    print_exp_prod(cs, exp);
+    print!("\n\\end{{aligned}}");
+}
+fn print_exp_prod<F: FieldExt>(cs: &ConstraintSystem<F>, exp: &Expression<F>) {
+    match exp {
+        Expression::Product(a, b) => {
+            if is_one(a) {
+                print_exp_prod(cs, b);
+            } else if is_one(b) {
+                print_exp_prod(cs, a);
+            } else {
+                print_exp_prod(cs, a);
+                print!("\\\\\n& \\cdot ");
+                print_exp_prod(cs, b);
+            }
+        }
+        Expression::Scaled(a, f) => {
+            if f == &F::one() {
+                print_exp_prod(cs, a);
+            } else {
+                print_f(f);
+                print!("\\\\\n& \\cdot ");
+                print_exp_prod(cs, a);
+            }
+        }
+        _ => paren_maby(cs, exp),
+    }
+}
+
+fn print_exp_sub<F: FieldExt>(cs: &ConstraintSystem<F>, exp: &Expression<F>) {
+    match exp {
+        Expression::Constant(scalar) => print_f(scalar),
+        Expression::Selector(selector) => {
+            let name = &cs.name_selectors[selector.0];
+            if name.is_empty() {
+                print!("sel_{}", selector.0);
+            } else {
+                print!("\\textbf{{{}}}", name);
+            }
+        }
+        Expression::Fixed {
+            name,
+            query_index,
+            column_index,
+            rotation,
+        } => {
+            let name = &cs.name_fixed_columns[*column_index];
+            if name.is_empty() {
+                print!("fix_{{{},{},{}}}", column_index, query_index, rotation.0)
+            } else {
+                print!("\\textbf{{{}", name);
+                if rotation.0 != 0 {
+                    print!("[{}]", rotation.0);
+                }
+                print!("}}");
+            }
+        }
+        Expression::Advice {
+            name,
+            query_index,
+            column_index,
+            rotation,
+        } => {
+            let name = &cs.name_advice_columns[*column_index];
+            if name.is_empty() {
+                print!("adv_{{{},{},{}}}", column_index, query_index, rotation.0)
+            } else {
+                print!("{}", name);
+                if rotation.0 != 0 {
+                    print!("[{}]", rotation.0);
+                }
+            }
+        }
+        Expression::Instance {
+            name,
+            query_index,
+            column_index,
+            rotation,
+        } => {
+            let name = &cs.name_instance_columns[*column_index];
+            if name.is_empty() {
+                print!(
+                    "\\underline{{ins_{{{},{},{}}}",
+                    column_index, query_index, rotation.0
+                );
+            } else {
+                print!("{}", name);
+                if rotation.0 != 0 {
+                    print!("[{}]", rotation.0);
+                }
+                print!("}}");
+            }
+        }
+        Expression::Negated(a) => {
+            print!("-");
+            paren_maby(cs, a);
+        }
+        Expression::Sum(a, b) => {
+            print_exp_sub(cs, a);
+            match b.as_ref() {
+                Expression::Negated(b) => {
+                    print!(" - ");
+                    print_exp_sub(cs, b);
+                }
+                _ => {
+                    print!(" + ");
+                    print_exp_sub(cs, b);
+                }
+            }
+        }
+        Expression::Product(a, b) => {
+            if is_one(a) {
+                print_exp_sub(cs, b);
+            } else if is_one(b) {
+                print_exp_sub(cs, a);
+            } else {
+                paren_maby(cs, a);
+                print!(" \\cdot ");
+                paren_maby(cs, b);
+            }
+        }
+        Expression::Scaled(a, f) => {
+            if f == &F::one() {
+                print_exp_sub(cs, a);
+            } else {
+                print_f(f);
+                print!(" \\cdot ");
+                paren_maby(cs, a);
+            }
+        }
+    }
+}
+
 impl<F: FieldExt> MockProver<F> {
     /// Runs a synthetic keygen-and-prove operation on the given circuit, collecting data
     /// about the constraints and their assignments.
@@ -814,6 +990,19 @@ impl<F: FieldExt> MockProver<F> {
                     })
             })
         });
+
+        for (gate_index, gate) in self.cs.gates.iter().enumerate() {
+            println!("DBG gate {}: {}", gate_index, gate.name());
+            for (poly_index, poly) in gate.polynomials().iter().enumerate() {
+                println!(
+                    "DBG poly {}: {}",
+                    poly_index,
+                    gate.constraint_name(poly_index)
+                );
+                print_exp(&self.cs, &poly);
+                println!("");
+            }
+        }
 
         // Check that all gates are satisfied for all rows.
         let gate_errors =

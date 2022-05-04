@@ -284,6 +284,7 @@ mod tests {
             let (combination_assignments, selector_assignments) =
                 process::<Fp, _>(selectors.clone(), max_degree, || {
                     let tmp = Expression::Fixed {
+                        name: String::new(),
                         query_index: query,
                         column_index: query,
                         rotation: Rotation::cur(),

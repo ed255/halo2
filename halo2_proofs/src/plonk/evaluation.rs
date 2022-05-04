@@ -355,6 +355,7 @@ impl<C: CurveAffine> Evaluator<C> {
             Expression::Constant(scalar) => self.add_constant(scalar),
             Expression::Selector(_selector) => unreachable!(),
             Expression::Fixed {
+                name,
                 query_index: _,
                 column_index,
                 rotation,
@@ -366,6 +367,7 @@ impl<C: CurveAffine> Evaluator<C> {
                 )))
             }
             Expression::Advice {
+                name,
                 query_index: _,
                 column_index,
                 rotation,
@@ -377,6 +379,7 @@ impl<C: CurveAffine> Evaluator<C> {
                 )))
             }
             Expression::Instance {
+                name,
                 query_index: _,
                 column_index,
                 rotation,

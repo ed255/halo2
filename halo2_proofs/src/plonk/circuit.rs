@@ -450,6 +450,8 @@ pub enum Expression<F> {
     Selector(Selector),
     /// This is a fixed column queried at a certain relative location
     Fixed {
+        /// Name
+        name: String,
         /// Query index
         query_index: usize,
         /// Column index
@@ -459,6 +461,8 @@ pub enum Expression<F> {
     },
     /// This is an advice (witness) column queried at a certain relative location
     Advice {
+        /// Name
+        name: String,
         /// Query index
         query_index: usize,
         /// Column index
@@ -468,6 +472,8 @@ pub enum Expression<F> {
     },
     /// This is an instance (external) column queried at a certain relative location
     Instance {
+        /// Name
+        name: String,
         /// Query index
         query_index: usize,
         /// Column index
@@ -504,16 +510,19 @@ impl<F: Field> Expression<F> {
             Expression::Constant(scalar) => constant(*scalar),
             Expression::Selector(selector) => selector_column(*selector),
             Expression::Fixed {
+                name,
                 query_index,
                 column_index,
                 rotation,
             } => fixed_column(*query_index, *column_index, *rotation),
             Expression::Advice {
+                name,
                 query_index,
                 column_index,
                 rotation,
             } => advice_column(*query_index, *column_index, *rotation),
             Expression::Instance {
+                name,
                 query_index,
                 column_index,
                 rotation,
@@ -793,9 +802,13 @@ impl<F: Field> Gate<F> {
 #[derive(Debug, Clone)]
 pub struct ConstraintSystem<F: Field> {
     pub(crate) num_fixed_columns: usize,
+    pub(crate) name_fixed_columns: Vec<String>,
     pub(crate) num_advice_columns: usize,
+    pub(crate) name_advice_columns: Vec<String>,
     pub(crate) num_instance_columns: usize,
+    pub(crate) name_instance_columns: Vec<String>,
     pub(crate) num_selectors: usize,
+    pub(crate) name_selectors: Vec<String>,
     pub(crate) selector_map: Vec<Column<Fixed>>,
     pub(crate) gates: Vec<Gate<F>>,
     pub(crate) advice_queries: Vec<(Column<Advice>, Rotation)>,
@@ -853,9 +866,13 @@ impl<F: Field> Default for ConstraintSystem<F> {
     fn default() -> ConstraintSystem<F> {
         ConstraintSystem {
             num_fixed_columns: 0,
+            name_fixed_columns: Vec::new(),
             num_advice_columns: 0,
+            name_advice_columns: Vec::new(),
             num_instance_columns: 0,
+            name_instance_columns: Vec::new(),
             num_selectors: 0,
+            name_selectors: Vec::new(),
             selector_map: vec![],
             gates: vec![],
             fixed_queries: Vec::new(),
@@ -1151,6 +1168,7 @@ impl<F: Field> ConstraintSystem<F> {
                 let column = self.fixed_column();
                 new_columns.push(column);
                 Expression::Fixed {
+                    name: String::new(),
                     query_index: self.query_fixed_index(column, Rotation::cur()),
                     column_index: column.index,
                     rotation: Rotation::cur(),
@@ -1192,16 +1210,19 @@ impl<F: Field> ConstraintSystem<F> {
                     selector_replacements[selector.0].clone()
                 },
                 &|query_index, column_index, rotation| Expression::Fixed {
+                    name: String::new(),
                     query_index,
                     column_index,
                     rotation,
                 },
                 &|query_index, column_index, rotation| Expression::Advice {
+                    name: String::new(),
                     query_index,
                     column_index,
                     rotation,
                 },
                 &|query_index, column_index, rotation| Expression::Instance {
+                    name: String::new(),
                     query_index,
                     column_index,
                     rotation,
@@ -1236,18 +1257,34 @@ impl<F: Field> ConstraintSystem<F> {
     /// expressions nor multiplied by other expressions containing simple
     /// selectors. Also, simple selectors may not appear in lookup argument
     /// inputs.
-    pub fn selector(&mut self) -> Selector {
+    pub fn selector_name(&mut self, name: String) -> Selector {
         let index = self.num_selectors;
         self.num_selectors += 1;
+        self.name_selectors.push(name);
         Selector(index, true)
+    }
+
+    /// Allocate a new (simple) selector. Simple selectors cannot be added to
+    /// expressions nor multiplied by other expressions containing simple
+    /// selectors. Also, simple selectors may not appear in lookup argument
+    /// inputs.
+    pub fn selector(&mut self) -> Selector {
+        self.selector_name(String::new())
+    }
+
+    /// Allocate a new complex selector that can appear anywhere
+    /// within expressions.
+    pub fn complex_selector_name(&mut self, name: String) -> Selector {
+        let index = self.num_selectors;
+        self.num_selectors += 1;
+        self.name_selectors.push(name);
+        Selector(index, false)
     }
 
     /// Allocate a new complex selector that can appear anywhere
     /// within expressions.
     pub fn complex_selector(&mut self) -> Selector {
-        let index = self.num_selectors;
-        self.num_selectors += 1;
-        Selector(index, false)
+        self.complex_selector_name(String::new())
     }
 
     /// Allocates a new fixed column that can be used in a lookup table.
@@ -1258,34 +1295,52 @@ impl<F: Field> ConstraintSystem<F> {
     }
 
     /// Allocate a new fixed column
-    pub fn fixed_column(&mut self) -> Column<Fixed> {
+    pub fn fixed_column_name(&mut self, name: String) -> Column<Fixed> {
         let tmp = Column {
             index: self.num_fixed_columns,
             column_type: Fixed,
         };
         self.num_fixed_columns += 1;
+        self.name_fixed_columns.push(name);
         tmp
     }
 
+    /// Allocate a new fixed column
+    pub fn fixed_column(&mut self) -> Column<Fixed> {
+        self.fixed_column_name(String::new())
+    }
+
     /// Allocate a new advice column
-    pub fn advice_column(&mut self) -> Column<Advice> {
+    pub fn advice_column_name(&mut self, name: String) -> Column<Advice> {
         let tmp = Column {
             index: self.num_advice_columns,
             column_type: Advice,
         };
         self.num_advice_columns += 1;
         self.num_advice_queries.push(0);
+        self.name_advice_columns.push(name);
         tmp
     }
 
+    /// Allocate a new advice column
+    pub fn advice_column(&mut self) -> Column<Advice> {
+        self.advice_column_name(String::new())
+    }
+
     /// Allocate a new instance column
-    pub fn instance_column(&mut self) -> Column<Instance> {
+    pub fn instance_column_name(&mut self, name: String) -> Column<Instance> {
         let tmp = Column {
             index: self.num_instance_columns,
             column_type: Instance,
         };
         self.num_instance_columns += 1;
+        self.name_advice_columns.push(name);
         tmp
+    }
+
+    /// Allocate a new instance column
+    pub fn instance_column(&mut self) -> Column<Instance> {
+        self.instance_column_name(String::new())
     }
 
     /// Compute the degree of the constraint system (the maximum degree of all
@@ -1387,10 +1442,37 @@ impl<'a, F: Field> VirtualCells<'a, F> {
     }
 
     /// Query a fixed column at a relative position
-    pub fn query_fixed(&mut self, column: Column<Fixed>, at: Rotation) -> Expression<F> {
+    pub fn query_fixed_name(
+        &mut self,
+        column: Column<Fixed>,
+        at: Rotation,
+        name: String,
+    ) -> Expression<F> {
         self.queried_cells.push((column, at).into());
         Expression::Fixed {
+            name,
             query_index: self.meta.query_fixed_index(column, at),
+            column_index: column.index,
+            rotation: at,
+        }
+    }
+
+    /// Query a fixed column at a relative position
+    pub fn query_fixed(&mut self, column: Column<Fixed>, at: Rotation) -> Expression<F> {
+        self.query_fixed_name(column, at, String::new())
+    }
+
+    /// Query an advice column at a relative position
+    pub fn query_advice_name(
+        &mut self,
+        column: Column<Advice>,
+        at: Rotation,
+        name: String,
+    ) -> Expression<F> {
+        self.queried_cells.push((column, at).into());
+        Expression::Advice {
+            name,
+            query_index: self.meta.query_advice_index(column, at),
             column_index: column.index,
             rotation: at,
         }
@@ -1398,9 +1480,20 @@ impl<'a, F: Field> VirtualCells<'a, F> {
 
     /// Query an advice column at a relative position
     pub fn query_advice(&mut self, column: Column<Advice>, at: Rotation) -> Expression<F> {
+        self.query_advice_name(column, at, String::new())
+    }
+
+    /// Query an instance column at a relative position
+    pub fn query_instance_name(
+        &mut self,
+        column: Column<Instance>,
+        at: Rotation,
+        name: String,
+    ) -> Expression<F> {
         self.queried_cells.push((column, at).into());
-        Expression::Advice {
-            query_index: self.meta.query_advice_index(column, at),
+        Expression::Instance {
+            name,
+            query_index: self.meta.query_instance_index(column, at),
             column_index: column.index,
             rotation: at,
         }
@@ -1408,12 +1501,7 @@ impl<'a, F: Field> VirtualCells<'a, F> {
 
     /// Query an instance column at a relative position
     pub fn query_instance(&mut self, column: Column<Instance>, at: Rotation) -> Expression<F> {
-        self.queried_cells.push((column, at).into());
-        Expression::Instance {
-            query_index: self.meta.query_instance_index(column, at),
-            column_index: column.index,
-            rotation: at,
-        }
+        self.query_instance_name(column, at, String::new())
     }
 
     /// Query an Any column at a relative position
