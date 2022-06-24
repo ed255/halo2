@@ -1095,149 +1095,152 @@ impl<F: FieldExt> MockProver<F> {
                 panic!("invalid gate row id {}", row_id);
             }
         });
-        lookup_input_row_ids.clone().into_par_iter().for_each(|row_id| {
-            if !self.usable_rows.contains(&row_id) {
-                panic!("invalid gate row id {}", row_id);
-            }
-        });
+        lookup_input_row_ids
+            .clone()
+            .into_par_iter()
+            .for_each(|row_id| {
+                if !self.usable_rows.contains(&row_id) {
+                    panic!("invalid gate row id {}", row_id);
+                }
+            });
 
         // Check that within each region, all cells used in instantiated gates have been
         // assigned to.
         let selector_errors = self.regions.par_iter().enumerate().flat_map(|(r_i, r)| {
-            r.enabled_selectors.par_iter().flat_map(move |(selector, at)| {
-                // Find the gates enabled by this selector
-                self.cs
-                    .gates
-                    .par_iter()
-                    // Assume that if a queried selector is enabled, the user wants to use the
-                    // corresponding gate in some way.
-                    //
-                    // TODO: This will trip up on the reverse case, where leaving a selector
-                    // un-enabled keeps a gate enabled. We could alternatively require that
-                    // every selector is explicitly enabled or disabled on every row? But that
-                    // seems messy and confusing.
-                    .enumerate()
-                    .filter(move |(_, g)| g.queried_selectors().contains(selector))
-                    .flat_map(move |(gate_index, gate)| {
-                        at.par_iter().flat_map(move |selector_row| {
-                            // Selectors are queried with no rotation.
-                            let gate_row = *selector_row as i32;
+            r.enabled_selectors
+                .par_iter()
+                .flat_map(move |(selector, at)| {
+                    // Find the gates enabled by this selector
+                    self.cs
+                        .gates
+                        .par_iter()
+                        // Assume that if a queried selector is enabled, the user wants to use the
+                        // corresponding gate in some way.
+                        //
+                        // TODO: This will trip up on the reverse case, where leaving a selector
+                        // un-enabled keeps a gate enabled. We could alternatively require that
+                        // every selector is explicitly enabled or disabled on every row? But that
+                        // seems messy and confusing.
+                        .enumerate()
+                        .filter(move |(_, g)| g.queried_selectors().contains(selector))
+                        .flat_map(move |(gate_index, gate)| {
+                            at.par_iter().flat_map(move |selector_row| {
+                                // Selectors are queried with no rotation.
+                                let gate_row = *selector_row as i32;
 
-                            gate.queried_cells().par_iter().filter_map(move |cell| {
-                                // Determine where this cell should have been assigned.
-                                let cell_row = ((gate_row + n + cell.rotation.0) % n) as usize;
+                                gate.queried_cells().par_iter().filter_map(move |cell| {
+                                    // Determine where this cell should have been assigned.
+                                    let cell_row = ((gate_row + n + cell.rotation.0) % n) as usize;
 
-                                // Check that it was assigned!
-                                if r.is_assigned(cell.column, cell_row) {
-                                    None
-                                } else {
-                                    Some(VerifyFailure::CellNotAssigned {
-                                        gate: (gate_index, gate.name()).into(),
-                                        region: (r_i, r.name.clone()).into(),
-                                        column: cell.column,
-                                        offset: cell_row as isize - r.rows.unwrap().0 as isize,
-                                    })
-                                }
+                                    // Check that it was assigned!
+                                    if r.is_assigned(cell.column, cell_row) {
+                                        None
+                                    } else {
+                                        Some(VerifyFailure::CellNotAssigned {
+                                            gate: (gate_index, gate.name()).into(),
+                                            region: (r_i, r.name.clone()).into(),
+                                            column: cell.column,
+                                            offset: cell_row as isize - r.rows.unwrap().0 as isize,
+                                        })
+                                    }
+                                })
                             })
                         })
-                    })
-            })
+                })
         });
 
         // Check that all gates are satisfied for all rows.
-        let gate_errors =
-            self.cs
-                .gates
-                .par_iter()
-                .enumerate()
-                .flat_map(|(gate_index, gate)| {
-                    let blinding_rows =
-                        (self.n as usize - (self.cs.blinding_factors() + 1))..(self.n as usize);
-                    (gate_row_ids
-                        .clone()
-                        .into_par_iter()
-                        .chain(blinding_rows.into_par_iter()))
-                    .flat_map(move |row| {
-                        fn load_instance<'a, F: FieldExt, T: ColumnType>(
-                            n: i32,
-                            row: i32,
-                            queries: &'a [(Column<T>, Rotation)],
-                            cells: &'a [Vec<F>],
-                        ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a
-                        {
-                            move |index, _, _| {
-                                let (column, at) = &queries[index];
-                                let resolved_row = (row + n + at.0) % n;
-                                Value::Real(cells[column.index()][resolved_row as usize])
-                            }
+        let gate_errors = self
+            .cs
+            .gates
+            .par_iter()
+            .enumerate()
+            .flat_map(|(gate_index, gate)| {
+                let blinding_rows =
+                    (self.n as usize - (self.cs.blinding_factors() + 1))..(self.n as usize);
+                (gate_row_ids
+                    .clone()
+                    .into_par_iter()
+                    .chain(blinding_rows.into_par_iter()))
+                .flat_map(move |row| {
+                    fn load_instance<'a, F: FieldExt, T: ColumnType>(
+                        n: i32,
+                        row: i32,
+                        queries: &'a [(Column<T>, Rotation)],
+                        cells: &'a [Vec<F>],
+                    ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a {
+                        move |index, _, _| {
+                            let (column, at) = &queries[index];
+                            let resolved_row = (row + n + at.0) % n;
+                            Value::Real(cells[column.index()][resolved_row as usize])
                         }
+                    }
 
-                        fn load<'a, F: FieldExt, T: ColumnType>(
-                            n: i32,
-                            row: i32,
-                            queries: &'a [(Column<T>, Rotation)],
-                            cells: &'a [Vec<CellValue<F>>],
-                        ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a
-                        {
-                            move |index, _, _| {
-                                let (column, at) = &queries[index];
-                                let resolved_row = (row + n + at.0) % n;
-                                cells[column.index()][resolved_row as usize].into()
-                            }
+                    fn load<'a, F: FieldExt, T: ColumnType>(
+                        n: i32,
+                        row: i32,
+                        queries: &'a [(Column<T>, Rotation)],
+                        cells: &'a [Vec<CellValue<F>>],
+                    ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a {
+                        move |index, _, _| {
+                            let (column, at) = &queries[index];
+                            let resolved_row = (row + n + at.0) % n;
+                            cells[column.index()][resolved_row as usize].into()
                         }
-                        let row = row as i32;
-                        gate.polynomials().par_iter().enumerate().filter_map(
-                            move |(poly_index, poly)| match poly.evaluate_lazy(
-                                &|scalar| Value::Real(scalar),
-                                &|_| panic!("virtual selectors are removed during optimization"),
-                                &load(n, row, &self.cs.fixed_queries, &self.fixed),
-                                &load(n, row, &self.cs.advice_queries, &self.advice),
-                                &load_instance(n, row, &self.cs.instance_queries, &self.instance),
-                                &|a| -a,
-                                &|a, b| a + b,
-                                &|a, b| a * b,
-                                &|a, scalar| a * scalar,
-                                &Value::Real(F::zero()),
-                            ) {
-                                Value::Real(x) if x.is_zero_vartime() => None,
-                                Value::Real(_) => Some(VerifyFailure::ConstraintNotSatisfied {
-                                    constraint: (
-                                        (gate_index, gate.name()).into(),
-                                        poly_index,
-                                        gate.constraint_name(poly_index),
-                                    )
-                                        .into(),
-                                    location: FailureLocation::find_expressions(
-                                        &self.cs,
-                                        &self.regions,
-                                        row as usize,
-                                        Some(poly).into_iter(),
+                    }
+                    let row = row as i32;
+                    gate.polynomials().par_iter().enumerate().filter_map(
+                        move |(poly_index, poly)| match poly.evaluate_lazy(
+                            &|scalar| Value::Real(scalar),
+                            &|_| panic!("virtual selectors are removed during optimization"),
+                            &load(n, row, &self.cs.fixed_queries, &self.fixed),
+                            &load(n, row, &self.cs.advice_queries, &self.advice),
+                            &load_instance(n, row, &self.cs.instance_queries, &self.instance),
+                            &|a| -a,
+                            &|a, b| a + b,
+                            &|a, b| a * b,
+                            &|a, scalar| a * scalar,
+                            &Value::Real(F::zero()),
+                        ) {
+                            Value::Real(x) if x.is_zero_vartime() => None,
+                            Value::Real(_) => Some(VerifyFailure::ConstraintNotSatisfied {
+                                constraint: (
+                                    (gate_index, gate.name()).into(),
+                                    poly_index,
+                                    gate.constraint_name(poly_index),
+                                )
+                                    .into(),
+                                location: FailureLocation::find_expressions(
+                                    &self.cs,
+                                    &self.regions,
+                                    row as usize,
+                                    Some(poly).into_iter(),
+                                ),
+                                cell_values: util::cell_values(
+                                    gate,
+                                    poly,
+                                    &load(n, row, &self.cs.fixed_queries, &self.fixed),
+                                    &load(n, row, &self.cs.advice_queries, &self.advice),
+                                    &load_instance(
+                                        n,
+                                        row,
+                                        &self.cs.instance_queries,
+                                        &self.instance,
                                     ),
-                                    cell_values: util::cell_values(
-                                        gate,
-                                        poly,
-                                        &load(n, row, &self.cs.fixed_queries, &self.fixed),
-                                        &load(n, row, &self.cs.advice_queries, &self.advice),
-                                        &load_instance(
-                                            n,
-                                            row,
-                                            &self.cs.instance_queries,
-                                            &self.instance,
-                                        ),
-                                    ),
-                                }),
-                                Value::Poison => Some(VerifyFailure::ConstraintPoisoned {
-                                    constraint: (
-                                        (gate_index, gate.name()).into(),
-                                        poly_index,
-                                        gate.constraint_name(poly_index),
-                                    )
-                                        .into(),
-                                }),
-                            },
-                        )
-                    })
-                });
+                                ),
+                            }),
+                            Value::Poison => Some(VerifyFailure::ConstraintPoisoned {
+                                constraint: (
+                                    (gate_index, gate.name()).into(),
+                                    poly_index,
+                                    gate.constraint_name(poly_index),
+                                )
+                                    .into(),
+                            }),
+                        },
+                    )
+                })
+            });
 
         // Check that all lookups exist in their respective tables.
         let lookup_errors =
@@ -1347,19 +1350,22 @@ impl<F: FieldExt> MockProver<F> {
                 .flat_map(move |(column, values)| {
                     // Iterate over each row of the column to check that the cell's
                     // value is preserved by the mapping.
-                    values.par_iter().enumerate().filter_map(move |(row, cell)| {
-                        let original_cell = original(column, row);
-                        let permuted_cell = original(cell.0, cell.1);
-                        if original_cell == permuted_cell {
-                            None
-                        } else {
-                            Some(VerifyFailure::Permutation {
-                                column: (*self.cs.permutation.get_columns().get(column).unwrap())
-                                    .into(),
-                                row,
-                            })
-                        }
-                    })
+                    values
+                        .par_iter()
+                        .enumerate()
+                        .filter_map(move |(row, cell)| {
+                            let original_cell = original(column, row);
+                            let permuted_cell = original(cell.0, cell.1);
+                            if original_cell == permuted_cell {
+                                None
+                            } else {
+                                Some(VerifyFailure::Permutation {
+                                    column: (*self.cs.permutation.get_columns().get(column).unwrap())
+                                        .into(),
+                                    row,
+                                })
+                            }
+                        })
                 })
         };
 
@@ -1385,7 +1391,6 @@ impl<F: FieldExt> MockProver<F> {
             Err(errors)
         }
     }
-
 }
 
 #[cfg(test)]
