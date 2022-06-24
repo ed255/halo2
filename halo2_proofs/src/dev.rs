@@ -1360,8 +1360,13 @@ impl<F: FieldExt> MockProver<F> {
                                 None
                             } else {
                                 Some(VerifyFailure::Permutation {
-                                    column: (*self.cs.permutation.get_columns().get(column).unwrap())
-                                        .into(),
+                                    column: (*self
+                                        .cs
+                                        .permutation
+                                        .get_columns()
+                                        .get(column)
+                                        .unwrap())
+                                    .into(),
                                     row,
                                 })
                             }
