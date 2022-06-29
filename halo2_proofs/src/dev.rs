@@ -14,7 +14,7 @@ use rayon::iter::ParallelIterator;
 
 use crate::plonk::Assigned;
 use crate::{
-    arithmetic::{FieldExt, Group},
+    arithmetic::{parallelize, FieldExt, Group},
     plonk::{
         permutation, Advice, Any, Assignment, Circuit, Column, ColumnType, ConstraintSystem, Error,
         Expression, Fixed, FloorPlanner, Instance, Selector, VirtualCell,
@@ -39,7 +39,7 @@ mod graph;
 pub use graph::{circuit_dot_graph, layout::CircuitLayout};
 
 /// The location within the circuit at which a particular [`VerifyFailure`] occurred.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum FailureLocation {
     /// A location inside a region.
     InRegion {
@@ -124,7 +124,7 @@ impl FailureLocation {
 }
 
 /// The reasons why a particular circuit is not satisfied.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum VerifyFailure {
     /// A cell used in an active gate was not assigned to.
     CellNotAssigned {
@@ -674,6 +674,63 @@ impl<F: Field + Group> Assignment<F> for MockProver<F> {
     }
 }
 
+fn home_made_par_iter_flat_map<U: Send + Clone, Fun: Send + Sync + Clone>(
+    row_indexes: &Vec<usize>,
+    f: Fun,
+) -> Vec<U>
+where
+    Fun: Fn(i32) -> Vec<U>,
+{
+    // let mut row_errors = vec![Vec::new(); row_indexes.len()];
+    // parallelize(&mut row_errors, |row_errors, chunks| {
+    //     for (i, errors) in row_errors.iter_mut().enumerate() {
+    //         let row = row_indexes[chunks + i] as i32;
+    //         *errors = f(row);
+    //     }
+    // });
+    // row_errors.concat()
+    row_indexes
+        .par_iter()
+        .flat_map(|row| f(*row as i32))
+        .collect()
+}
+
+// fn home_made_par_iter_map_option<
+//     U: Send + Clone,
+//     Fun: Send + Sync + Clone
+// >(row_indexes: &Vec::<usize>, f: Fun) -> Vec::<Option<U>>
+// where
+//     Fun: Fn(i32) -> Option<U>
+// {
+// let mut row_errors = vec![None; row_indexes.len()];
+// parallelize(&mut row_errors, |row_errors, chunks| {
+//     for (i, errors) in row_errors.iter_mut().enumerate() {
+//         let row = row_indexes[chunks + i] as i32;
+//         *errors = f(row);
+//     }
+// });
+// row_errors
+// row_indexes.par_iter().map(|row| f(*row as i32)).collect()
+// }
+
+fn home_made_par_iter_map<U: Send + Default + Clone, Fun: Send + Sync + Clone>(
+    row_indexes: &Vec<usize>,
+    f: Fun,
+) -> Vec<U>
+where
+    Fun: Fn(i32) -> U,
+{
+    // let mut row_vec = vec![U::default(); row_indexes.len()];
+    // parallelize(&mut row_vec, |row_vec, chunks| {
+    //     for (i, errors) in row_vec.iter_mut().enumerate() {
+    //         let row = row_indexes[chunks + i] as i32;
+    //         *errors = f(row);
+    //     }
+    // });
+    // row_vec
+    row_indexes.par_iter().map(|row| f(*row as i32)).collect()
+}
+
 impl<F: FieldExt> MockProver<F> {
     /// Runs a synthetic keygen-and-prove operation on the given circuit, collecting data
     /// about the constraints and their assignments.
@@ -822,6 +879,7 @@ impl<F: FieldExt> MockProver<F> {
                                 if r.is_assigned(cell.column, cell_row) {
                                     None
                                 } else {
+                                    // None
                                     Some(VerifyFailure::CellNotAssigned {
                                         gate: (gate_index, gate.name()).into(),
                                         region: (r_i, r.name.clone()).into(),
@@ -1082,7 +1140,7 @@ impl<F: FieldExt> MockProver<F> {
     /// Constraints are only checked at `gate_row_ids`,
     /// and lookup inputs are only checked at `lookup_input_row_ids`
     /// Run verify_at_rows() in parallel.
-    pub fn verify_at_rows_par<I: Clone + IntoParallelIterator<Item = usize> + std::marker::Sync>(
+    pub fn verify_at_rows_par<I: Clone + Iterator<Item = usize>>(
         &self,
         gate_row_ids: I,
         lookup_input_row_ids: I,
@@ -1090,45 +1148,50 @@ impl<F: FieldExt> MockProver<F> {
         let n = self.n as i32;
 
         // check all the row ids are valid
-        gate_row_ids.clone().into_par_iter().for_each(|row_id| {
-            if !self.usable_rows.contains(&row_id) {
-                panic!("invalid gate row id {}", row_id);
-            }
-        });
-        lookup_input_row_ids
-            .clone()
-            .into_par_iter()
-            .for_each(|row_id| {
+        let mut gate_row_id_slice: Vec<usize> = gate_row_ids.clone().collect();
+        parallelize(&mut gate_row_id_slice, |gate_row_id_slice, _| {
+            for row_id in gate_row_id_slice {
                 if !self.usable_rows.contains(&row_id) {
                     panic!("invalid gate row id {}", row_id);
                 }
-            });
+            }
+        });
+
+        let mut lookup_input_row_id_slice: Vec<usize> = lookup_input_row_ids.clone().collect();
+        parallelize(
+            &mut lookup_input_row_id_slice,
+            |lookup_input_row_id_slice, _| {
+                for row_id in lookup_input_row_id_slice {
+                    if !self.usable_rows.contains(&row_id) {
+                        panic!("invalid gate row id {}", row_id);
+                    }
+                }
+            },
+        );
 
         // Check that within each region, all cells used in instantiated gates have been
         // assigned to.
-        let selector_errors = self.regions.par_iter().enumerate().flat_map(|(r_i, r)| {
-            r.enabled_selectors
-                .par_iter()
-                .flat_map(move |(selector, at)| {
-                    // Find the gates enabled by this selector
-                    self.cs
-                        .gates
-                        .par_iter()
-                        // Assume that if a queried selector is enabled, the user wants to use the
-                        // corresponding gate in some way.
-                        //
-                        // TODO: This will trip up on the reverse case, where leaving a selector
-                        // un-enabled keeps a gate enabled. We could alternatively require that
-                        // every selector is explicitly enabled or disabled on every row? But that
-                        // seems messy and confusing.
-                        .enumerate()
-                        .filter(move |(_, g)| g.queried_selectors().contains(selector))
-                        .flat_map(move |(gate_index, gate)| {
-                            at.par_iter().flat_map(move |selector_row| {
-                                // Selectors are queried with no rotation.
-                                let gate_row = *selector_row as i32;
-
-                                gate.queried_cells().par_iter().filter_map(move |cell| {
+        let selector_errors = self.regions.iter().enumerate().flat_map(|(r_i, r)| {
+            r.enabled_selectors.iter().flat_map(move |(selector, at)| {
+                // Find the gates enabled by this selector
+                self.cs
+                    .gates
+                    .iter()
+                    // Assume that if a queried selector is enabled, the user wants to use the
+                    // corresponding gate in some way.
+                    //
+                    // TODO: This will trip up on the reverse case, where leaving a selector
+                    // un-enabled keeps a gate enabled. We could alternatively require that
+                    // every selector is explicitly enabled or disabled on every row? But that
+                    // seems messy and confusing.
+                    .enumerate()
+                    .filter(move |(_, g)| g.queried_selectors().contains(selector))
+                    .flat_map(move |(gate_index, gate)| {
+                        home_made_par_iter_flat_map(at, |gate_row| {
+                            let ret: Vec<VerifyFailure> = gate
+                                .queried_cells()
+                                .iter()
+                                .filter_map(move |cell| {
                                     // Determine where this cell should have been assigned.
                                     let cell_row = ((gate_row + n + cell.rotation.0) % n) as usize;
 
@@ -1136,6 +1199,7 @@ impl<F: FieldExt> MockProver<F> {
                                     if r.is_assigned(cell.column, cell_row) {
                                         None
                                     } else {
+                                        // None
                                         Some(VerifyFailure::CellNotAssigned {
                                             gate: (gate_index, gate.name()).into(),
                                             region: (r_i, r.name.clone()).into(),
@@ -1144,101 +1208,108 @@ impl<F: FieldExt> MockProver<F> {
                                         })
                                     }
                                 })
-                            })
+                                .collect();
+                            ret
                         })
-                })
+                    })
+            })
         });
 
         // Check that all gates are satisfied for all rows.
+        let blinding_rows = (self.n as usize - (self.cs.blinding_factors() + 1))..(self.n as usize);
+        let indexes: Vec<usize> = (gate_row_ids
+            .clone()
+            .into_iter()
+            .chain(blinding_rows.into_iter()))
+        .collect();
         let gate_errors = self
             .cs
             .gates
-            .par_iter()
+            .iter()
             .enumerate()
             .flat_map(|(gate_index, gate)| {
-                let blinding_rows =
-                    (self.n as usize - (self.cs.blinding_factors() + 1))..(self.n as usize);
-                (gate_row_ids
-                    .clone()
-                    .into_par_iter()
-                    .chain(blinding_rows.into_par_iter()))
-                .flat_map(move |row| {
-                    fn load_instance<'a, F: FieldExt, T: ColumnType>(
-                        n: i32,
-                        row: i32,
-                        queries: &'a [(Column<T>, Rotation)],
-                        cells: &'a [Vec<F>],
-                    ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a {
-                        move |index, _, _| {
-                            let (column, at) = &queries[index];
-                            let resolved_row = (row + n + at.0) % n;
-                            Value::Real(cells[column.index()][resolved_row as usize])
-                        }
+                fn load_instance<'a, F: FieldExt, T: ColumnType>(
+                    n: i32,
+                    row: i32,
+                    queries: &'a [(Column<T>, Rotation)],
+                    cells: &'a [Vec<F>],
+                ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a {
+                    move |index, _, _| {
+                        let (column, at) = &queries[index];
+                        let resolved_row = (row + n + at.0) % n;
+                        Value::Real(cells[column.index()][resolved_row as usize])
                     }
+                }
 
-                    fn load<'a, F: FieldExt, T: ColumnType>(
-                        n: i32,
-                        row: i32,
-                        queries: &'a [(Column<T>, Rotation)],
-                        cells: &'a [Vec<CellValue<F>>],
-                    ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a {
-                        move |index, _, _| {
-                            let (column, at) = &queries[index];
-                            let resolved_row = (row + n + at.0) % n;
-                            cells[column.index()][resolved_row as usize].into()
-                        }
+                fn load<'a, F: FieldExt, T: ColumnType>(
+                    n: i32,
+                    row: i32,
+                    queries: &'a [(Column<T>, Rotation)],
+                    cells: &'a [Vec<CellValue<F>>],
+                ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a {
+                    move |index, _, _| {
+                        let (column, at) = &queries[index];
+                        let resolved_row = (row + n + at.0) % n;
+                        cells[column.index()][resolved_row as usize].into()
                     }
-                    let row = row as i32;
-                    gate.polynomials().par_iter().enumerate().filter_map(
-                        move |(poly_index, poly)| match poly.evaluate_lazy(
-                            &|scalar| Value::Real(scalar),
-                            &|_| panic!("virtual selectors are removed during optimization"),
-                            &load(n, row, &self.cs.fixed_queries, &self.fixed),
-                            &load(n, row, &self.cs.advice_queries, &self.advice),
-                            &load_instance(n, row, &self.cs.instance_queries, &self.instance),
-                            &|a| -a,
-                            &|a, b| a + b,
-                            &|a, b| a * b,
-                            &|a, scalar| a * scalar,
-                            &Value::Real(F::zero()),
-                        ) {
-                            Value::Real(x) if x.is_zero_vartime() => None,
-                            Value::Real(_) => Some(VerifyFailure::ConstraintNotSatisfied {
-                                constraint: (
-                                    (gate_index, gate.name()).into(),
-                                    poly_index,
-                                    gate.constraint_name(poly_index),
-                                )
-                                    .into(),
-                                location: FailureLocation::find_expressions(
-                                    &self.cs,
-                                    &self.regions,
-                                    row as usize,
-                                    Some(poly).into_iter(),
-                                ),
-                                cell_values: util::cell_values(
-                                    gate,
-                                    poly,
-                                    &load(n, row, &self.cs.fixed_queries, &self.fixed),
-                                    &load(n, row, &self.cs.advice_queries, &self.advice),
-                                    &load_instance(
-                                        n,
-                                        row,
-                                        &self.cs.instance_queries,
-                                        &self.instance,
+                }
+                home_made_par_iter_flat_map(&indexes, |row| {
+                    let ret: Vec<VerifyFailure> = gate
+                        .polynomials()
+                        .iter()
+                        .enumerate()
+                        .filter_map(move |(poly_index, poly)| {
+                            match poly.evaluate_lazy(
+                                &|scalar| Value::Real(scalar),
+                                &|_| panic!("virtual selectors are removed during optimization"),
+                                &load(n, row, &self.cs.fixed_queries, &self.fixed),
+                                &load(n, row, &self.cs.advice_queries, &self.advice),
+                                &load_instance(n, row, &self.cs.instance_queries, &self.instance),
+                                &|a| -a,
+                                &|a, b| a + b,
+                                &|a, b| a * b,
+                                &|a, scalar| a * scalar,
+                                &Value::Real(F::zero()),
+                            ) {
+                                Value::Real(x) if x.is_zero_vartime() => None,
+                                Value::Real(_) => Some(VerifyFailure::ConstraintNotSatisfied {
+                                    constraint: (
+                                        (gate_index, gate.name()).into(),
+                                        poly_index,
+                                        gate.constraint_name(poly_index),
+                                    )
+                                        .into(),
+                                    location: FailureLocation::find_expressions(
+                                        &self.cs,
+                                        &self.regions,
+                                        row as usize,
+                                        Some(poly).into_iter(),
                                     ),
-                                ),
-                            }),
-                            Value::Poison => Some(VerifyFailure::ConstraintPoisoned {
-                                constraint: (
-                                    (gate_index, gate.name()).into(),
-                                    poly_index,
-                                    gate.constraint_name(poly_index),
-                                )
-                                    .into(),
-                            }),
-                        },
-                    )
+                                    cell_values: util::cell_values(
+                                        gate,
+                                        poly,
+                                        &load(n, row, &self.cs.fixed_queries, &self.fixed),
+                                        &load(n, row, &self.cs.advice_queries, &self.advice),
+                                        &load_instance(
+                                            n,
+                                            row,
+                                            &self.cs.instance_queries,
+                                            &self.instance,
+                                        ),
+                                    ),
+                                }),
+                                Value::Poison => Some(VerifyFailure::ConstraintPoisoned {
+                                    constraint: (
+                                        (gate_index, gate.name()).into(),
+                                        poly_index,
+                                        gate.constraint_name(poly_index),
+                                    )
+                                        .into(),
+                                }),
+                            }
+                        })
+                        .collect();
+                    ret
                 })
             });
 
@@ -1246,10 +1317,10 @@ impl<F: FieldExt> MockProver<F> {
         let lookup_errors =
             self.cs
                 .lookups
-                .par_iter()
+                .iter()
                 .enumerate()
                 .flat_map(|(lookup_index, lookup)| {
-                    let load = |expression: &Expression<F>, row| {
+                    let load = |expression: &Expression<F>, row: i32| {
                         expression.evaluate_lazy(
                             &|scalar| Value::Real(scalar),
                             &|_| panic!("virtual selectors are removed during optimization"),
@@ -1257,8 +1328,7 @@ impl<F: FieldExt> MockProver<F> {
                                 let query = self.cs.fixed_queries[index];
                                 let column_index = query.0.index();
                                 let rotation = query.1 .0;
-                                self.fixed[column_index]
-                                    [(row as i32 + n + rotation) as usize % n as usize]
+                                self.fixed[column_index][(row + n + rotation) as usize % n as usize]
                                     .into()
                             },
                             &|index, _, _| {
@@ -1266,7 +1336,7 @@ impl<F: FieldExt> MockProver<F> {
                                 let column_index = query.0.index();
                                 let rotation = query.1 .0;
                                 self.advice[column_index]
-                                    [(row as i32 + n + rotation) as usize % n as usize]
+                                    [(row + n + rotation) as usize % n as usize]
                                     .into()
                             },
                             &|index, _, _| {
@@ -1288,42 +1358,39 @@ impl<F: FieldExt> MockProver<F> {
 
                     // In the real prover, the lookup expressions are never enforced on
                     // unusable rows, due to the (1 - (l_last(X) + l_blind(X))) term.
-                    let table: std::collections::BTreeSet<Vec<_>> = self
-                        .usable_rows
-                        .clone()
-                        .map(|table_row| {
-                            lookup
-                                .table_expressions
-                                .par_iter()
-                                .map(move |c| load(c, table_row))
-                                .collect::<Vec<_>>()
-                        })
-                        .collect();
-                    lookup_input_row_ids
-                        .clone()
-                        .into_par_iter()
-                        .filter_map(move |input_row| {
-                            let inputs: Vec<_> = lookup
-                                .input_expressions
-                                .iter()
-                                .map(|c| load(c, input_row))
-                                .collect();
-                            let lookup_passes = table.contains(&inputs);
-                            if lookup_passes {
-                                None
-                            } else {
-                                Some(VerifyFailure::Lookup {
-                                    name: lookup.name,
-                                    lookup_index,
-                                    location: FailureLocation::find_expressions(
-                                        &self.cs,
-                                        &self.regions,
-                                        input_row,
-                                        lookup.input_expressions.iter(),
-                                    ),
-                                })
-                            }
-                        })
+                    let usable_row_vec = self.usable_rows.clone().into_iter().collect();
+                    let table = home_made_par_iter_map(&usable_row_vec, |table_row| {
+                        lookup
+                            .table_expressions
+                            .iter()
+                            .map(move |c| load(c, table_row))
+                            .collect::<Vec<_>>()
+                    });
+                    let lookup_input_row_id_vec = lookup_input_row_ids.clone().collect();
+                    home_made_par_iter_map(&lookup_input_row_id_vec, |input_row| {
+                        let inputs: Vec<_> = lookup
+                            .input_expressions
+                            .iter()
+                            .map(|c| load(c, input_row))
+                            .collect();
+                        let lookup_passes = table.contains(&inputs);
+                        if lookup_passes {
+                            None
+                        } else {
+                            Some(VerifyFailure::Lookup {
+                                name: lookup.name,
+                                lookup_index,
+                                location: FailureLocation::find_expressions(
+                                    &self.cs,
+                                    &self.regions,
+                                    input_row as usize,
+                                    lookup.input_expressions.iter(),
+                                ),
+                            })
+                        }
+                    })
+                    .into_iter()
+                    .filter_map(|e| e)
                 });
 
         // Check that permutations preserve the original values of the cells.
@@ -1345,36 +1412,46 @@ impl<F: FieldExt> MockProver<F> {
             // Iterate over each column of the permutation
             self.permutation
                 .mapping
-                .par_iter()
+                .iter()
                 .enumerate()
                 .flat_map(move |(column, values)| {
                     // Iterate over each row of the column to check that the cell's
                     // value is preserved by the mapping.
-                    values
-                        .par_iter()
-                        .enumerate()
-                        .filter_map(move |(row, cell)| {
-                            let original_cell = original(column, row);
-                            let permuted_cell = original(cell.0, cell.1);
-                            if original_cell == permuted_cell {
-                                None
-                            } else {
-                                Some(VerifyFailure::Permutation {
-                                    column: (*self
-                                        .cs
-                                        .permutation
-                                        .get_columns()
-                                        .get(column)
-                                        .unwrap())
+                    let f = move |row, cell: (usize, usize)| -> Option<VerifyFailure> {
+                        let original_cell = original(column, row);
+                        let permuted_cell = original(cell.0, cell.1);
+                        if original_cell == permuted_cell {
+                            None
+                        } else {
+                            Some(VerifyFailure::Permutation {
+                                column: (*self.cs.permutation.get_columns().get(column).unwrap())
                                     .into(),
-                                    row,
-                                })
-                            }
+                                row,
+                            })
+                        }
+                    };
+                    // let mut row_errors = vec![None; values.len()];
+                    // parallelize(&mut row_errors, |row_errors, chunks| {
+                    //     for (i, error) in row_errors.iter_mut().enumerate() {
+                    //         let cell = values[chunks + i];
+                    //         let row = chunks + i;
+                    //         *error = f(row, cell);
+                    //     }
+                    // });
+                    // row_errors.into_iter().filter_map(|e| e)
+                    let indexes: Vec<usize> = (0..values.len()).into_iter().collect();
+                    let ret: Vec<VerifyFailure> = indexes
+                        .par_iter()
+                        .filter_map(|row| {
+                            let cell = values[*row];
+                            f(*row, cell)
                         })
+                        .collect();
+                    ret
                 })
         };
 
-        let mut errors: Vec<_> = rayon::iter::empty()
+        let mut errors: Vec<_> = iter::empty()
             .chain(selector_errors)
             .chain(gate_errors)
             .chain(lookup_errors)
