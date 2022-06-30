@@ -39,7 +39,7 @@ mod graph;
 pub use graph::{circuit_dot_graph, layout::CircuitLayout};
 
 /// The location within the circuit at which a particular [`VerifyFailure`] occurred.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq)]
 pub enum FailureLocation {
     /// A location inside a region.
     InRegion {
@@ -124,7 +124,7 @@ impl FailureLocation {
 }
 
 /// The reasons why a particular circuit is not satisfied.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq)]
 pub enum VerifyFailure {
     /// A cell used in an active gate was not assigned to.
     CellNotAssigned {
@@ -674,60 +674,26 @@ impl<F: Field + Group> Assignment<F> for MockProver<F> {
     }
 }
 
-fn home_made_par_iter_flat_map<U: Send + Clone, Fun: Send + Sync + Clone>(
+fn home_made_par_iter_flat_map<U: Send, Fun: Send + Sync>(
     row_indexes: &Vec<usize>,
     f: Fun,
 ) -> Vec<U>
 where
     Fun: Fn(i32) -> Vec<U>,
 {
-    // let mut row_errors = vec![Vec::new(); row_indexes.len()];
-    // parallelize(&mut row_errors, |row_errors, chunks| {
-    //     for (i, errors) in row_errors.iter_mut().enumerate() {
-    //         let row = row_indexes[chunks + i] as i32;
-    //         *errors = f(row);
-    //     }
-    // });
-    // row_errors.concat()
     row_indexes
         .par_iter()
         .flat_map(|row| f(*row as i32))
         .collect()
 }
 
-// fn home_made_par_iter_map_option<
-//     U: Send + Clone,
-//     Fun: Send + Sync + Clone
-// >(row_indexes: &Vec::<usize>, f: Fun) -> Vec::<Option<U>>
-// where
-//     Fun: Fn(i32) -> Option<U>
-// {
-// let mut row_errors = vec![None; row_indexes.len()];
-// parallelize(&mut row_errors, |row_errors, chunks| {
-//     for (i, errors) in row_errors.iter_mut().enumerate() {
-//         let row = row_indexes[chunks + i] as i32;
-//         *errors = f(row);
-//     }
-// });
-// row_errors
-// row_indexes.par_iter().map(|row| f(*row as i32)).collect()
-// }
-
-fn home_made_par_iter_map<U: Send + Default + Clone, Fun: Send + Sync + Clone>(
+fn home_made_par_iter_map<U: Send + Default, Fun: Send + Sync>(
     row_indexes: &Vec<usize>,
     f: Fun,
 ) -> Vec<U>
 where
     Fun: Fn(i32) -> U,
 {
-    // let mut row_vec = vec![U::default(); row_indexes.len()];
-    // parallelize(&mut row_vec, |row_vec, chunks| {
-    //     for (i, errors) in row_vec.iter_mut().enumerate() {
-    //         let row = row_indexes[chunks + i] as i32;
-    //         *errors = f(row);
-    //     }
-    // });
-    // row_vec
     row_indexes.par_iter().map(|row| f(*row as i32)).collect()
 }
 
@@ -1430,15 +1396,6 @@ impl<F: FieldExt> MockProver<F> {
                             })
                         }
                     };
-                    // let mut row_errors = vec![None; values.len()];
-                    // parallelize(&mut row_errors, |row_errors, chunks| {
-                    //     for (i, error) in row_errors.iter_mut().enumerate() {
-                    //         let cell = values[chunks + i];
-                    //         let row = chunks + i;
-                    //         *error = f(row, cell);
-                    //     }
-                    // });
-                    // row_errors.into_iter().filter_map(|e| e)
                     let indexes: Vec<usize> = (0..values.len()).into_iter().collect();
                     let ret: Vec<VerifyFailure> = indexes
                         .par_iter()
