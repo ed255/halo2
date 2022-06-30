@@ -694,6 +694,7 @@ fn home_made_par_iter_map<U: Send + Default, Fun: Send + Sync>(
 where
     Fun: Fn(i32) -> U,
 {
+
     row_indexes.par_iter().map(|row| f(*row as i32)).collect()
 }
 
@@ -1356,7 +1357,7 @@ impl<F: FieldExt> MockProver<F> {
                         }
                     })
                     .into_iter()
-                    .filter_map(|e| e)
+                    .flatten()
                 });
 
         // Check that permutations preserve the original values of the cells.
