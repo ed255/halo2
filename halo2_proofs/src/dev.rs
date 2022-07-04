@@ -7,6 +7,7 @@ use std::iter;
 use std::ops::{Add, Mul, Neg, Range};
 
 use ff::Field;
+use log::debug;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
@@ -694,6 +695,25 @@ where
     row_indexes.par_iter().map(|row| f(*row as i32)).collect()
 }
 
+#[derive(Debug)]
+pub struct VerifyConfig {
+    pub selectors: bool,
+    pub gates: bool,
+    pub lookups: bool,
+    pub perms: bool,
+}
+
+impl Default for VerifyConfig {
+    fn default() -> Self {
+        Self {
+            selectors: true,
+            gates: true,
+            lookups: true,
+            perms: true,
+        }
+    }
+}
+
 impl<F: FieldExt> MockProver<F> {
     /// Runs a synthetic keygen-and-prove operation on the given circuit, collecting data
     /// about the constraints and their assignments.
@@ -785,18 +805,27 @@ impl<F: FieldExt> MockProver<F> {
 
     /// Returns `Ok(())` if this `MockProver` is satisfied, or a list of errors indicating
     /// the reasons that the circuit is not satisfied. Run verify() in parallel.
-    pub fn verify_par(&self) -> Result<(), Vec<VerifyFailure>> {
-        self.verify_at_rows_par(self.usable_rows.clone(), self.usable_rows.clone())
+    pub fn verify_par(&self, cfg: VerifyConfig) -> Result<(), Vec<VerifyFailure>> {
+        self.verify_at_rows_par(self.usable_rows.clone(), self.usable_rows.clone(), cfg)
+    }
+
+    pub fn verify_at_rows<I: Clone + Iterator<Item = usize>>(
+        &self,
+        gate_row_ids: I,
+        lookup_input_row_ids: I,
+    ) -> Result<(), Vec<VerifyFailure>> {
+        self.verify_at_rows_cfg(gate_row_ids, lookup_input_row_ids, VerifyConfig::default())
     }
 
     /// Returns `Ok(())` if this `MockProver` is satisfied, or a list of errors indicating
     /// the reasons that the circuit is not satisfied.
     /// Constraints are only checked at `gate_row_ids`,
     /// and lookup inputs are only checked at `lookup_input_row_ids`
-    pub fn verify_at_rows<I: Clone + Iterator<Item = usize>>(
+    pub fn verify_at_rows_cfg<I: Clone + Iterator<Item = usize>>(
         &self,
         gate_row_ids: I,
         lookup_input_row_ids: I,
+        cfg: VerifyConfig,
     ) -> Result<(), Vec<VerifyFailure>> {
         let n = self.n as i32;
 
@@ -814,7 +843,8 @@ impl<F: FieldExt> MockProver<F> {
 
         // Check that within each region, all cells used in instantiated gates have been
         // assigned to.
-        let selector_errors = self.regions.iter().enumerate().flat_map(|(r_i, r)| {
+        let end = if cfg.selectors { self.regions.len() } else { 0 };
+        let selector_errors = self.regions[..end].iter().enumerate().flat_map(|(r_i, r)| {
             r.enabled_selectors.iter().flat_map(move |(selector, at)| {
                 // Find the gates enabled by this selector
                 self.cs
@@ -857,49 +887,49 @@ impl<F: FieldExt> MockProver<F> {
         });
 
         // Check that all gates are satisfied for all rows.
-        let gate_errors =
-            self.cs
-                .gates
-                .iter()
-                .enumerate()
-                .flat_map(|(gate_index, gate)| {
-                    let blinding_rows =
-                        (self.n as usize - (self.cs.blinding_factors() + 1))..(self.n as usize);
-                    (gate_row_ids
-                        .clone()
-                        .into_iter()
-                        .chain(blinding_rows.into_iter()))
-                    .flat_map(move |row| {
-                        fn load_instance<'a, F: FieldExt, T: ColumnType>(
-                            n: i32,
-                            row: i32,
-                            queries: &'a [(Column<T>, Rotation)],
-                            cells: &'a [Vec<F>],
-                        ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a
-                        {
-                            move |index, _, _| {
-                                let (column, at) = &queries[index];
-                                let resolved_row = (row + n + at.0) % n;
-                                Value::Real(cells[column.index()][resolved_row as usize])
-                            }
+        let end = if cfg.gates { self.cs.gates.len() } else { 0 };
+        let gate_errors = self.cs.gates[..end]
+            .iter()
+            .enumerate()
+            .flat_map(|(gate_index, gate)| {
+                let blinding_rows =
+                    (self.n as usize - (self.cs.blinding_factors() + 1))..(self.n as usize);
+                (gate_row_ids
+                    .clone()
+                    .into_iter()
+                    .chain(blinding_rows.into_iter()))
+                .flat_map(move |row| {
+                    fn load_instance<'a, F: FieldExt, T: ColumnType>(
+                        n: i32,
+                        row: i32,
+                        queries: &'a [(Column<T>, Rotation)],
+                        cells: &'a [Vec<F>],
+                    ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a {
+                        move |index, _, _| {
+                            let (column, at) = &queries[index];
+                            let resolved_row = (row + n + at.0) % n;
+                            Value::Real(cells[column.index()][resolved_row as usize])
                         }
+                    }
 
-                        fn load<'a, F: FieldExt, T: ColumnType>(
-                            n: i32,
-                            row: i32,
-                            queries: &'a [(Column<T>, Rotation)],
-                            cells: &'a [Vec<CellValue<F>>],
-                        ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a
-                        {
-                            move |index, _, _| {
-                                let (column, at) = &queries[index];
-                                let resolved_row = (row + n + at.0) % n;
-                                cells[column.index()][resolved_row as usize].into()
-                            }
+                    fn load<'a, F: FieldExt, T: ColumnType>(
+                        n: i32,
+                        row: i32,
+                        queries: &'a [(Column<T>, Rotation)],
+                        cells: &'a [Vec<CellValue<F>>],
+                    ) -> impl Fn(usize, usize, Rotation) -> Value<F> + 'a {
+                        move |index, _, _| {
+                            let (column, at) = &queries[index];
+                            let resolved_row = (row + n + at.0) % n;
+                            cells[column.index()][resolved_row as usize].into()
                         }
-                        let row = row as i32;
-                        gate.polynomials().iter().enumerate().filter_map(
-                            move |(poly_index, poly)| match poly.evaluate_lazy(
+                    }
+                    let row = row as i32;
+                    gate.polynomials()
+                        .iter()
+                        .enumerate()
+                        .filter_map(move |(poly_index, poly)| {
+                            match poly.evaluate_lazy(
                                 &|scalar| Value::Real(scalar),
                                 &|_| panic!("virtual selectors are removed during optimization"),
                                 &load(n, row, &self.cs.fixed_queries, &self.fixed),
@@ -946,15 +976,19 @@ impl<F: FieldExt> MockProver<F> {
                                     )
                                         .into(),
                                 }),
-                            },
-                        )
-                    })
-                });
+                            }
+                        })
+                })
+            });
 
         // Check that all lookups exist in their respective tables.
+        let end = if cfg.lookups {
+            self.cs.lookups.len()
+        } else {
+            0
+        };
         let lookup_errors =
-            self.cs
-                .lookups
+            self.cs.lookups[..end]
                 .iter()
                 .enumerate()
                 .flat_map(|(lookup_index, lookup)| {
@@ -1052,8 +1086,12 @@ impl<F: FieldExt> MockProver<F> {
             };
 
             // Iterate over each column of the permutation
-            self.permutation
-                .mapping
+            let end = if cfg.perms {
+                self.permutation.mapping.len()
+            } else {
+                0
+            };
+            self.permutation.mapping[..end]
                 .iter()
                 .enumerate()
                 .flat_map(move |(column, values)| {
@@ -1107,10 +1145,13 @@ impl<F: FieldExt> MockProver<F> {
         &self,
         gate_row_ids: I,
         lookup_input_row_ids: I,
+        cfg: VerifyConfig,
     ) -> Result<(), Vec<VerifyFailure>> {
+        debug!("Begin verify_at_rows_par");
         let n = self.n as i32;
 
         // check all the row ids are valid
+        debug!("check all the row ids are valid");
         let mut gate_row_id_slice: Vec<usize> = gate_row_ids.clone().collect();
         parallelize(&mut gate_row_id_slice, |gate_row_id_slice, _| {
             for row_id in gate_row_id_slice {
@@ -1134,7 +1175,8 @@ impl<F: FieldExt> MockProver<F> {
 
         // Check that within each region, all cells used in instantiated gates have been
         // assigned to.
-        let selector_errors = self.regions.iter().enumerate().flat_map(|(r_i, r)| {
+        let end = if cfg.selectors { self.regions.len() } else { 0 };
+        let selector_errors = self.regions[..end].iter().enumerate().flat_map(|(r_i, r)| {
             r.enabled_selectors.iter().flat_map(move |(selector, at)| {
                 // Find the gates enabled by this selector
                 self.cs
@@ -1177,14 +1219,16 @@ impl<F: FieldExt> MockProver<F> {
                     })
             })
         });
+        debug!("check assignments...");
+        let mut selector_errors: Vec<_> = selector_errors.collect();
+        debug!("check assignments... done");
 
         // Check that all gates are satisfied for all rows.
         let blinding_rows = (self.n as usize - (self.cs.blinding_factors() + 1))..(self.n as usize);
         let indexes: Vec<usize> =
             (gate_row_ids.into_iter().chain(blinding_rows.into_iter())).collect();
-        let gate_errors = self
-            .cs
-            .gates
+        let end = if cfg.gates { self.cs.gates.len() } else { 0 };
+        let gate_errors = self.cs.gates[..end]
             .iter()
             .enumerate()
             .flat_map(|(gate_index, gate)| {
@@ -1272,11 +1316,18 @@ impl<F: FieldExt> MockProver<F> {
                     ret
                 })
             });
+        debug!("check gates...");
+        let mut gate_errors: Vec<_> = gate_errors.collect();
+        debug!("check gates... done");
 
         // Check that all lookups exist in their respective tables.
+        let end = if cfg.lookups {
+            self.cs.lookups.len()
+        } else {
+            0
+        };
         let lookup_errors =
-            self.cs
-                .lookups
+            self.cs.lookups[..end]
                 .iter()
                 .enumerate()
                 .flat_map(|(lookup_index, lookup)| {
@@ -1352,6 +1403,9 @@ impl<F: FieldExt> MockProver<F> {
                     .into_iter()
                     .flatten()
                 });
+        debug!("check lookups...");
+        let mut lookup_errors: Vec<_> = lookup_errors.collect();
+        debug!("check lookups... done");
 
         // Check that permutations preserve the original values of the cells.
         let perm_errors = {
@@ -1370,8 +1424,12 @@ impl<F: FieldExt> MockProver<F> {
             };
 
             // Iterate over each column of the permutation
-            self.permutation
-                .mapping
+            let end = if cfg.perms {
+                self.permutation.mapping.len()
+            } else {
+                0
+            };
+            self.permutation.mapping[..end]
                 .iter()
                 .enumerate()
                 .flat_map(move |(column, values)| {
@@ -1401,13 +1459,21 @@ impl<F: FieldExt> MockProver<F> {
                     ret
                 })
         };
+        debug!("check permutations...");
+        let mut perm_errors: Vec<_> = perm_errors.collect();
+        debug!("check permutations... done");
 
-        let mut errors: Vec<_> = iter::empty()
-            .chain(selector_errors)
-            .chain(gate_errors)
-            .chain(lookup_errors)
-            .chain(perm_errors)
-            .collect();
+        let mut errors = Vec::new();
+        errors.append(&mut selector_errors);
+        errors.append(&mut gate_errors);
+        errors.append(&mut lookup_errors);
+        errors.append(&mut perm_errors);
+        // let mut errors: Vec<_> = iter::empty()
+        //     .chain(selector_errors.iter())
+        //     .chain(gate_errors.iter())
+        //     .chain(lookup_errors.iter())
+        //     .chain(perm_errors.iter())
+        //     .collect();
         if errors.is_empty() {
             Ok(())
         } else {
