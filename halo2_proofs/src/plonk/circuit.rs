@@ -392,6 +392,11 @@ impl Selector {
     pub fn is_simple(&self) -> bool {
         self.1
     }
+
+    /// Returns index of this selector
+    pub fn index(&self) -> usize {
+        self.0
+    }
 }
 
 /// Query of fixed column at a certain relative location
@@ -1331,7 +1336,8 @@ pub struct Gate<F: Field> {
 }
 
 impl<F: Field> Gate<F> {
-    pub(crate) fn name(&self) -> &'static str {
+    /// Returns name of this gate
+    pub fn name(&self) -> &'static str {
         self.name
     }
 
@@ -1726,7 +1732,7 @@ impl<F: Field> ConstraintSystem<F> {
     /// find which fixed column corresponds with a given `Selector`.
     ///
     /// Do not call this twice. Yes, this should be a builder pattern instead.
-    pub(crate) fn compress_selectors(mut self, selectors: Vec<Vec<bool>>) -> (Self, Vec<Vec<F>>) {
+    pub fn compress_selectors(mut self, selectors: Vec<Vec<bool>>) -> (Self, Vec<Vec<F>>) {
         // The number of provided selector assignments must be the number we
         // counted for this constraint system.
         assert_eq!(selectors.len(), self.num_selectors);
@@ -2061,6 +2067,11 @@ impl<F: Field> ConstraintSystem<F> {
     /// Returns number of instance columns
     pub fn num_instance_columns(&self) -> usize {
         self.num_instance_columns
+    }
+
+    /// Returns number of selectors
+    pub fn num_selectors(&self) -> usize {
+        self.num_selectors
     }
 
     /// Returns number of challenges
