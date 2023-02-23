@@ -522,7 +522,10 @@ mod tests {
                 MyCircuit {}
             }
 
-            fn configure(meta: &mut crate::plonk::ConstraintSystem<vesta::Scalar>) -> Self::Config {
+            fn configure(
+                &self,
+                meta: &mut crate::plonk::ConstraintSystem<vesta::Scalar>,
+            ) -> Self::Config {
                 meta.advice_column()
             }
 

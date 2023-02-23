@@ -277,7 +277,7 @@ fn plonk_api() {
             }
         }
 
-        fn configure(meta: &mut ConstraintSystem<F>) -> PlonkConfig {
+        fn configure(&self, meta: &mut ConstraintSystem<F>) -> PlonkConfig {
             let e = meta.advice_column();
             let a = meta.advice_column();
             let b = meta.advice_column();

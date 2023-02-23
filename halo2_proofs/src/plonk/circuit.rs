@@ -677,7 +677,7 @@ pub trait Circuit<F: Field> {
 
     /// The circuit is given an opportunity to describe the exact gate
     /// arrangement, column arrangement, etc.
-    fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config;
+    fn configure(&self, meta: &mut ConstraintSystem<F>) -> Self::Config;
 
     /// Given the provided `cs`, synthesize the circuit. The concrete type of
     /// the caller will be different depending on the context, and they may or

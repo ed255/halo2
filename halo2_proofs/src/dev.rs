@@ -600,7 +600,7 @@ impl<F: FieldExt> MockProver<F> {
         let n = 1 << k;
 
         let mut cs = ConstraintSystem::default();
-        let config = ConcreteCircuit::configure(&mut cs);
+        let config = circuit.configure(&mut cs);
         let cs = cs;
 
         assert!(
@@ -1526,7 +1526,7 @@ mod tests {
             type Config = FaultyCircuitConfig;
             type FloorPlanner = SimpleFloorPlanner;
 
-            fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
+            fn configure(&self, meta: &mut ConstraintSystem<Fp>) -> Self::Config {
                 let a = meta.advice_column();
                 let b = meta.advice_column();
                 let q = meta.selector();
@@ -1612,7 +1612,7 @@ mod tests {
             type Config = FaultyCircuitConfig;
             type FloorPlanner = SimpleFloorPlanner;
 
-            fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
+            fn configure(&self, meta: &mut ConstraintSystem<Fp>) -> Self::Config {
                 let a = meta.advice_column();
                 let q = meta.complex_selector();
                 let table = meta.instance_column();
@@ -1781,7 +1781,7 @@ mod tests {
             type Config = FaultyCircuitConfig;
             type FloorPlanner = SimpleFloorPlanner;
 
-            fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
+            fn configure(&self, meta: &mut ConstraintSystem<Fp>) -> Self::Config {
                 let a = meta.advice_column();
                 let q = meta.complex_selector();
                 let table = meta.lookup_table_column();
@@ -1915,7 +1915,7 @@ mod tests {
             type Config = FaultyCircuitConfig;
             type FloorPlanner = SimpleFloorPlanner;
 
-            fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
+            fn configure(&self, meta: &mut ConstraintSystem<Fp>) -> Self::Config {
                 let a = meta.advice_column();
                 let b = meta.advice_column();
                 let c = meta.advice_column();

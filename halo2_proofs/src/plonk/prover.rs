@@ -65,7 +65,7 @@ pub fn create_proof<
 
     let domain = &pk.vk.domain;
     let mut meta = ConstraintSystem::default();
-    let config = ConcreteCircuit::configure(&mut meta);
+    let config = circuits[0].configure(&mut meta);
 
     // Selector optimizations cannot be applied here; use the ConstraintSystem
     // from the verification key.
