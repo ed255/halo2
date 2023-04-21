@@ -400,14 +400,14 @@ impl Selector {
 }
 
 /// Query of fixed column at a certain relative location
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct FixedQuery {
     /// Query index
-    pub(crate) index: usize,
+    pub index: usize,
     /// Column index
-    pub(crate) column_index: usize,
+    pub column_index: usize,
     /// Rotation of this query
-    pub(crate) rotation: Rotation,
+    pub rotation: Rotation,
 }
 
 impl FixedQuery {
@@ -423,7 +423,7 @@ impl FixedQuery {
 }
 
 /// Query of advice column at a certain relative location
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct AdviceQuery {
     /// Query index
     pub(crate) index: usize,
@@ -453,7 +453,7 @@ impl AdviceQuery {
 }
 
 /// Query of instance column at a certain relative location
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct InstanceQuery {
     /// Query index
     pub(crate) index: usize,
@@ -686,7 +686,7 @@ pub trait Circuit<F: Field> {
 }
 
 /// Low-degree expression representing an identity that must hold over the committed columns.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Expression<F> {
     /// This is a constant polynomial
     Constant(F),
@@ -708,6 +708,13 @@ pub enum Expression<F> {
     Product(Box<Expression<F>>, Box<Expression<F>>),
     /// This is a scaled polynomial
     Scaled(Box<Expression<F>>, F),
+}
+
+impl<F: std::fmt::Debug> std::hash::Hash for Expression<F> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let s = format!("{:?}", self);
+        s.hash(state);
+    }
 }
 
 impl<F: Field> Expression<F> {
@@ -1333,6 +1340,7 @@ pub struct Gate<F: Field> {
     /// trigger debug checks on gates.
     queried_selectors: Vec<Selector>,
     queried_cells: Vec<VirtualCell>,
+    query_names: HashMap<Expression<F>, String>,
 }
 
 impl<F: Field> Gate<F> {
@@ -1341,13 +1349,19 @@ impl<F: Field> Gate<F> {
         self.name
     }
 
-    pub(crate) fn constraint_name(&self, constraint_index: usize) -> &'static str {
+    /// TODO
+    pub fn constraint_name(&self, constraint_index: usize) -> &'static str {
         self.constraint_names[constraint_index]
     }
 
     /// Returns constraints of this gate
     pub fn polynomials(&self) -> &[Expression<F>] {
         &self.polys
+    }
+
+    /// Returns mut constraints of this gate
+    pub fn polynomials_mut(&mut self) -> &mut [Expression<F>] {
+        &mut self.polys
     }
 
     pub(crate) fn queried_selectors(&self) -> &[Selector] {
@@ -1357,13 +1371,19 @@ impl<F: Field> Gate<F> {
     pub(crate) fn queried_cells(&self) -> &[VirtualCell] {
         &self.queried_cells
     }
+
+    /// Return query names from this gate
+    pub fn query_names(&self) -> &HashMap<Expression<F>, String> {
+        &self.query_names
+    }
 }
 
 /// This is a description of the circuit environment, such as the gate, column and
 /// permutation arrangements.
 #[derive(Debug, Clone)]
 pub struct ConstraintSystem<F: Field> {
-    pub(crate) num_fixed_columns: usize,
+    /// Number of fixed columns
+    pub num_fixed_columns: usize,
     pub(crate) num_advice_columns: usize,
     pub(crate) num_instance_columns: usize,
     pub(crate) num_selectors: usize,
@@ -1397,6 +1417,11 @@ pub struct ConstraintSystem<F: Field> {
 
     // List of indexes of Fixed columns which are associated to a circuit-general Column tied to their annotation.
     pub(crate) general_column_annotations: HashMap<metadata::Column, String>,
+
+    /// List of names for queries that are used with selector expressions.  The first element in the
+    /// tuple is the expression selector.  The second element is the map of expression queries to
+    /// names.  The names are "enabled" when the expression selector evaluates to != 0.
+    pub(crate) query_names: Vec<(Expression<F>, HashMap<Expression<F>, String>)>,
 
     // Vector of fixed columns, which can be used to store constant values
     // that are copied into advice columns.
@@ -1482,6 +1507,7 @@ impl<F: Field> Default for ConstraintSystem<F> {
             permutation: permutation::Argument::new(),
             lookups: Vec::new(),
             general_column_annotations: HashMap::new(),
+            query_names: Vec::new(),
             constants: vec![],
             minimum_degree: None,
         }
@@ -1689,16 +1715,17 @@ impl<F: Field> ConstraintSystem<F> {
         self.minimum_degree = Some(degree);
     }
 
-    /// Creates a new gate.
+    /// Creates a new gate with query names.
     ///
     /// # Panics
     ///
     /// A gate is required to contain polynomial constraints. This method will panic if
     /// `constraints` returns an empty iterator.
-    pub fn create_gate<C: Into<Constraint<F>>, Iter: IntoIterator<Item = C>>(
+    pub fn create_gate_names<C: Into<Constraint<F>>, Iter: IntoIterator<Item = C>>(
         &mut self,
         name: &'static str,
         constraints: impl FnOnce(&mut VirtualCells<'_, F>) -> Iter,
+        query_names: HashMap<Expression<F>, String>,
     ) {
         let mut cells = VirtualCells::new(self);
         let constraints = constraints(&mut cells);
@@ -1722,7 +1749,22 @@ impl<F: Field> ConstraintSystem<F> {
             polys,
             queried_selectors,
             queried_cells,
+            query_names,
         });
+    }
+
+    /// Creates a new gate.
+    ///
+    /// # Panics
+    ///
+    /// A gate is required to contain polynomial constraints. This method will panic if
+    /// `constraints` returns an empty iterator.
+    pub fn create_gate<C: Into<Constraint<F>>, Iter: IntoIterator<Item = C>>(
+        &mut self,
+        name: &'static str,
+        constraints: impl FnOnce(&mut VirtualCells<'_, F>) -> Iter,
+    ) {
+        self.create_gate_names(name, constraints, HashMap::new())
     }
 
     /// This will compress selectors together depending on their provided
@@ -2097,6 +2139,26 @@ impl<F: Field> ConstraintSystem<F> {
         &self.gates
     }
 
+    /// Returns mut gates
+    pub fn gates_mut(&mut self) -> &mut Vec<Gate<F>> {
+        &mut self.gates
+    }
+
+    /// Returns general column annotations
+    pub fn general_column_annotations(&self) -> &HashMap<metadata::Column, String> {
+        &self.general_column_annotations
+    }
+
+    /// Query names
+    pub fn query_names(&self) -> &Vec<(Expression<F>, HashMap<Expression<F>, String>)> {
+        &self.query_names
+    }
+
+    /// mut Query names
+    pub fn query_names_mut(&mut self) -> &mut Vec<(Expression<F>, HashMap<Expression<F>, String>)> {
+        &mut self.query_names
+    }
+
     /// Returns advice queries
     pub fn advice_queries(&self) -> &Vec<(Column<Advice>, Rotation)> {
         &self.advice_queries
@@ -2120,6 +2182,11 @@ impl<F: Field> ConstraintSystem<F> {
     /// Returns lookup arguments
     pub fn lookups(&self) -> &Vec<lookup::Argument<F>> {
         &self.lookups
+    }
+
+    /// Returns mut lookup arguments
+    pub fn lookups_mut(&mut self) -> &mut Vec<lookup::Argument<F>> {
+        &mut self.lookups
     }
 
     /// Returns constants
@@ -2196,5 +2263,14 @@ impl<'a, F: Field> VirtualCells<'a, F> {
     /// Query a challenge
     pub fn query_challenge(&mut self, challenge: Challenge) -> Expression<F> {
         Expression::Challenge(challenge)
+    }
+
+    /// Push query names by selector
+    pub fn push_query_names(
+        &mut self,
+        selector: Expression<F>,
+        query_names: HashMap<Expression<F>, String>,
+    ) {
+        self.meta.query_names.push((selector, query_names))
     }
 }
